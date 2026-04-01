@@ -1,0 +1,755 @@
+---
+title: "Correct and Comprehensive Reporting of Results of a Multilevel Analysis Tutorial"
+author: "Sila Aydin - 237470, Huseyin Mert Ezer - 270981"
+date: "2026-03-31"
+output: html_document
+---
+
+# 1. Introduction
+
+Many research questions in education, psychology, and the social sciences involve **hierarchically structured data**, in which lower-level units are nested within higher-level units. Typical examples include students within schools, patients within hospitals, or repeated observations within individuals. In such settings, observations from the same group are often more similar to one another than to observations from different groups, which violates the independence assumption of standard regression models (Goldstein, 2011; Snijders & Bosker, 2012).
+
+Multilevel models, also referred to as mixed-effects or hierarchical linear models, are designed to account for this dependency by explicitly modeling variation at different levels of the data structure. Rather than treating all observations as independent, these models partition the total variance into within-group and between-group components, allowing researchers to examine how outcomes vary across multiple levels simultaneously (Goldstein, 2011; Snijders & Bosker, 2012). Correctly reporting multilevel analyses is therefore essential, since the specification of levels, variance components, and estimation methods directly affects interpretation and reproducibility (Huang, 2023; Monsalves et al., 2020).
+
+This tutorial introduces the logic of multilevel modeling through two educational datasets from R: the *engage* dataset and the *Chem97* dataset. The *engage* dataset provides a relatively simple **two-level structure**, with students nested within schools, whereas the *Chem97* dataset illustrates a more complex **three-level structure**, with students nested within schools and schools nested within Local Education Authorities (LEAs). Using these two datasets side by side makes it possible to demonstrate how multilevel structures can differ in complexity while still requiring the same fundamental modeling logic.
+
+The tutorial first describes the hierarchical structure of both datasets, their sampling characteristics, and their clustering patterns. It then explains why multilevel modeling is necessary by introducing the **Intraclass Correlation Coefficient (ICC)** as a measure of clustering. In this way, the tutorial combines conceptual explanation, mathematical background, and practical implementation in R, with the goal of showing not only how multilevel models are estimated, but also how they should be reported in a clear and scientifically transparent manner (Huang, 2023a; Monsalves et al., 2020).
+
+
+# 2. Data and Hierarchical Structure
+
+# 2.1 Overview of the Datasets
+
+Multilevel models are designed for hierarchically structured data, where observations are nested within higher-level units. In this tutorial, we analyze two educational datasets: *engage* and *Chem97*. These datasets differ in complexity and provide complementary examples of multilevel structures. 
+
+The *engage* dataset (Huang, 2023b) represents a two-level structure, where students are nested within schools. In contrast, the *Chem97* dataset (Browne, 2012) represents a three-level structure, where students are nested within schools, which are further nested within districts (Local Education Authorities, LEAs).
+
+The two datasets differ in size, structure, and outcome type, making them useful for illustrating different aspects of multilevel modeling.
+
+```{r}
+# Create comparison table
+library(dplyr)
+library(MLMusingR)
+library(mlmRev)
+data(engage)
+data(Chem97)
+
+comparison <- data.frame(
+  Feature = c("Structure", "Sample Size", "Imbalance", "Outcome"),
+  Engage = c("2-Level (Students within Schools)", "N = 528", "Moderate", "Engagement (Continuous)"),
+  Chem97 = c("3-Level (Students within Schools within Districts)", 
+             "N = 31,022", "Extreme", "Chemistry Score (Discrete/Skewed)")
+)
+
+knitr::kable(comparison, caption = "Table 1: Comparison of Engage and Chem97 datasets")
+```
+
+## 2.2 The *engage* Dataset
+
+The *engage* dataset represents a **two-level hierarchical structure**, where students (Level 1) are nested within schools (Level 2). The outcome variable is student engagement (`eng`), measured at the individual level. Several predictors are available at both levels of the hierarchy.
+
+The dataset contains **528 students across approximately 40 schools**. At the student level, variables include motivation (`mot`), GPA (`gpa`), and grade level (`grade`). At the school level, variables include rural status (`rural`) and the percentage of students receiving free or reduced-price meals (`frpm`). These variables allow us to examine both individual and contextual influences on engagement.
+
+### Hierarchical Structure
+
+- **Level 1 (Students):** eng, mot, gpa, grade  
+- **Level 2 (Schools):** school (grouping variable), rural, frpm  
+
+This structure implies that students within the same school may share similarities, which violates the independence assumption of standard regression models and motivates the use of multilevel modeling.
+
+All analyses were conducted in R (R Core Team, 2024).
+
+### Visualization of Clustering
+
+To explore whether engagement varies across schools, we visualize the distribution of engagement scores by school.
+
+```{r}
+library(ggplot2)
+
+# Order schools by median engagement
+engage_plot <- engage %>%
+  group_by(school) %>%
+  mutate(school_median = median(eng, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(
+    school_ordered = reorder(as.factor(school), school_median, FUN = median)
+  )
+
+ggplot(engage_plot, aes(x = school_ordered, y = eng)) +
+  geom_boxplot(fill = "skyblue", color = "black", alpha = 0.7, outlier.shape = 1) +
+  labs(
+    title = "Figure 1: Student Engagement Scores by School",
+    subtitle = "Visual Evidence of Clustering (Between-School Variance)",
+    x = "School ID (Sorted by Median Engagement)",
+    y = "Engagement Score"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 9),
+    plot.title = element_text(face = "bold", size = 20),
+    plot.subtitle = element_text(size = 14),
+    axis.title = element_text(size = 15)  )
+```
+
+Figure 1 shows that engagement scores differ across schools, with noticeable variation in both medians and spreads. This visual pattern suggests the presence of between-school clustering, supporting the use of a multilevel model.
+
+This two-level structure provides a clear and intuitive introduction to multilevel modeling, which can be extended to more complex hierarchical settings, as illustrated by the *Chem97* dataset in the following section.
+
+## 2.3 The *Chem97* Dataset
+
+The *Chem97* dataset represents a **three-level hierarchical structure**, where students (Level 1) are nested within schools (Level 2), which are further nested within districts or Local Education Authorities (LEAs) (Level 3). The outcome variable is students’ chemistry achievement score (`score`), measured at the individual level.
+
+Compared to the *engage* dataset, *Chem97* is substantially larger and more complex. It contains **31,022 students across 2,410 schools and 131 districts**, making it a suitable example for illustrating multilevel modeling with multiple hierarchical levels.
+
+At the student level, the dataset includes predictors such as gender (`gender`), age (`age`), prior academic achievement (`gcsescore`), and the number of GCSE exams taken (`gcsecnt`). In this dataset, all explanatory variables are measured at the individual level, while schools and districts act as grouping structures that capture contextual variation.
+
+### Hierarchical Structure
+
+- **Level 1 (Students):** score, gender, age, gcsescore, gcsecnt  
+- **Level 2 (Schools):** school (grouping variable)  
+- **Level 3 (Districts / LEAs):** lea (grouping variable)  
+
+This three-level structure allows us to separate variation in chemistry scores into three components: differences between students within the same school, differences between schools, and differences between districts. As a result, it provides a more comprehensive framework for analyzing educational outcomes compared to a simple two-level model.
+
+### Visualization of Clustering
+
+To examine clustering in the *Chem97* dataset, we visualize score distributions at both the school level and the district (LEA) level. Because the dataset contains a very large number of schools and districts, we display random samples of 50 units at each level for readability.
+
+```{r chem97-clustering-plots, fig.width=14, fig.height=6, message=FALSE, warning=FALSE}
+library(gridExtra)
+set.seed(123)
+# --------------------------
+# Plot 1: 50 random schools
+# --------------------------
+sample_schools <- sample(unique(Chem97$school), 50)
+
+chem_school_plot <- Chem97 %>%
+  filter(school %in% sample_schools) %>%
+  group_by(school) %>%
+  mutate(median_score = median(score, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(
+    school_ordered = reorder(as.factor(school), median_score, FUN = median)
+  )
+
+p1 <- ggplot(chem_school_plot, aes(x = school_ordered, y = score)) +
+  geom_boxplot(fill = "skyblue", color = "black", alpha = 0.7, outlier.shape = 1) +
+  labs(
+    title = "Figure 2: Chemistry Scores by School (Sample of 50)",
+    subtitle = "Between-school variation",
+    x = "School ID (Sorted by Median Score)",
+    y = "Chemistry Score"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8),
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(size = 13)
+  )
+
+# --------------------------
+# Plot 2: 50 random LEAs
+# --------------------------
+sample_leas <- sample(unique(Chem97$lea), 50)
+
+chem_lea_plot <- Chem97 %>%
+  filter(lea %in% sample_leas) %>%
+  group_by(lea) %>%
+  mutate(median_score = median(score, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(
+    lea_ordered = reorder(as.factor(lea), median_score, FUN = median)
+  )
+
+p2 <- ggplot(chem_lea_plot, aes(x = lea_ordered, y = score)) +
+  geom_boxplot(fill = "lightgreen", color = "black", alpha = 0.7, outlier.shape = 1) +
+  labs(
+    title = "Figure 3: Chemistry Scores by District (Sample of 50 LEAs)",
+    subtitle = "Between-district variation",
+    x = "District ID (LEA) - Sorted by Median Score",
+    y = "Chemistry Score"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8),
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(size = 13)
+  )
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+Figures 2 and 3 provide visual evidence of clustering in the *Chem97* dataset. Figure 2 shows substantial variation in chemistry scores across schools, indicating between-school differences, while Figure 3 illustrates additional variability across districts, suggesting the presence of higher-level clustering.
+
+## 2.4 Sampling and Data Characteristics
+
+Both datasets reflect hierarchical sampling designs commonly used in educational research. In such designs, higher-level units (e.g., schools or districts) are sampled first, followed by observations within those units (e.g., students). This naturally leads to clustered data structures.
+
+The *engage* dataset exhibits a two-stage structure, with students nested within schools, while the *Chem97* dataset follows a three-stage structure, adding an additional district level. These sampling procedures justify the use of multilevel models, as observations within the same cluster are likely to be correlated.
+
+Although neither dataset contains missing values, both exhibit **imbalanced group sizes**, meaning that the number of students varies across schools (and across districts in *Chem97*). This imbalance is typical in real-world data and can influence variance estimation and model precision, further motivating the use of multilevel modeling approaches.
+
+## 2.5 Multilevel Diagram Representation
+
+Multilevel diagrams make it simpler to comprehend the connections between various levels of research by offering a clear visual depiction of the hierarchical structure of data. In order to properly specify multilevel models, they assist in identifying the grouping structure (e.g., students within schools, schools within districts). These diagrams also show the possibility of both within-group similarity and between-group variation by clearly showing the nesting of observations. As a result, they act as a conceptual link between the formal statistical models employed in multilevel analysis and the actual data structure.
+
+Multilevel structures can be represented visually using diagrams and summary tables that show how observations are nested within higher-level units. For the present tutorial, the *engage* dataset is illustrated with a diagram, while the more complex *Chem97* dataset is summarized with a hierarchical structure table.
+
+### Diagram example for the *engage* dataset
+
+```{r engage-diagram, echo=FALSE, fig.cap="Figure 4: Multilevel Structure of the Engage Dataset", fig.width=6, fig.height=5}
+library(DiagrammeR)
+
+grViz("
+digraph engage_structure {
+  graph [layout = dot, rankdir = TB,
+  label = 'Figure 4: Multilevel Structure of the Engage Dataset', 
+         labelloc = t, fontsize = 20] # 't' puts the label at the top]
+
+  node [shape = box, style = rounded]
+
+  pop [label = 'Sample Population']
+  school1 [label = 'School ID 1\\n(Level 2)\\nVariables: rural, frpm']
+  school2 [label = '...']
+  school40 [label = 'School ID 40\\n(Level 2)\\nVariables: rural, frpm']
+
+  s11 [label = 'Student 1.1\\n(Level 1)\\nVariables: eng, mot, gpa, grade']
+  s12 [label = '...']
+  s1n [label = 'Student 1.n']
+  s401 [label = 'Student 40.1']
+  s40n [label = 'Student 40.n']
+
+  pop -> school1
+  pop -> school2
+  pop -> school40
+
+  school1 -> s11
+  school1 -> s12
+  school1 -> s1n
+
+  school40 -> s401
+  school40 -> s40n
+}
+")
+```
+
+Figure 4 illustrates the two-level structure of the *engage* dataset, in which students are nested within schools. Student-level variables include engagement, motivation, GPA, and grade, while school-level variables include rural status and FRPM.
+
+### Table example for the *Chem97* dataset
+
+```{r chem97-table-nice, echo=FALSE}
+library(knitr)
+library(kableExtra)
+
+chem97_table <- data.frame(
+  "Level" = c("3", "2", "1"),
+  "Unit (Clusters)" = c("LEA", "School", "Student"),
+  "ID in R" = c("lea", "school", "student"),
+  "N (Sample Size)" = c("131", "2410", "31022"),
+  "Variables" = c(
+    "None in this dataset",
+    "None in this dataset",
+    "score; gender, age, gcsescore, gcsecnt"
+  ),
+  check.names = FALSE
+)
+
+kable(
+  chem97_table,
+  caption = "Table 2: Hierarchical Structure of the Chem97 Dataset",
+  booktabs = TRUE
+) %>%
+  kable_styling(latex_options = c("hold_position", "striped"))
+```
+
+
+# 3. Justifying the Need for Multilevel Modeling (MM) and ICC
+
+## 3.1 Why Standard Regression Is Not Enough
+
+Applying standard regression to nested data severely underestimates standard errors, increasing the risk of Type I errors (false positives). Multilevel models correct this by explicitly modeling the hierarchy. To justify using a multilevel model, we first need to prove that clustering exists and is statistically meaningful. This is accomplished using the **Intraclass Correlation Coefficient (ICC)**. 
+
+Verbally, the ICC measures the proportion of the total variance in your outcome variable that is accounted for by the grouping structure (between-group variance) compared to the individual level (within-group variance). An ICC close to $0$ means the grouping structure does not matter much; an ICC closer to $1$ implies observations within a group are practically identical. Rather than relying on a strict rule of thumb, calculating the ICC is necessary because even a small ICC can necessitate a multilevel approach if the average cluster size is large enough to create a substantial Design Effect (Monsalves et al., 2020).
+
+
+## 3.2 Mathematical Explanation of the ICC and ICC in Two-Level and Three-Level Models
+
+The ICC is typically calculated using an **unconditional means model** (also known as a null model or intercept-only model), which is a multilevel model with no predictors (Monsalves et al., 2020). 
+
+#### Two-Level Models
+For a standard 2-level model (like the `engage` dataset, where students are nested in schools), the null model is:
+
+$$y_{ij} = \gamma_{00} + u_{0j} + e_{ij}$$
+
+Where:
+
+* $\gamma_{00}$ is the grand mean.
+
+* $u_{0j}$ is the random intercept for group $j$, representing the level-2 variance, denoted as $\tau^2$.
+
+* $e_{ij}$ is the residual error for individual $i$ in group $j$, representing the level-1 variance, denoted as $\sigma^2$.
+
+The ICC (also referred to as the variance partition coefficient, or VPC) is the ratio of the between-group variance to the total variance (Monsalves et al., 2020):
+
+$$ICC = \frac{\tau^2}{\tau^2 + \sigma^2}$$
+
+#### Three-Level Models
+For a 3-level model (like the `Chem97` dataset, where students are nested in schools, which are nested in Local Education Authorities, or LEAs), the variance is partitioned across three levels:
+
+$$y_{ijk} = \gamma_{000} + v_{0k} + u_{0jk} + e_{ijk}$$
+
+Here, we have three variance components:
+
+* $\sigma^2_{L3}$: Level-3 variance (LEA level)
+
+* $\sigma^2_{L2}$: Level-2 variance (School level)
+
+* $\sigma^2_{L1}$: Level-1 variance (Student level)
+
+In 3-level models, you typically report two distinct ICCs:
+
+1. **Level-3 ICC** (The proportion of variance strictly at the highest level):
+   $$ICC_{L3} = \frac{\sigma^2_{L3}}{\sigma^2_{L3} + \sigma^2_{L2} + \sigma^2_{L1}}$$
+
+2. **Level-2 ICC** (The proportion of variance at or above level-2, meaning the correlation between two students in the same school and same LEA):
+   $$ICC_{L2} = \frac{\sigma^2_{L3} + \sigma^2_{L2}}{\sigma^2_{L3} + \sigma^2_{L2} + \sigma^2_{L1}}$$
+
+
+## 3.4 Different Methodological Cases
+
+Not all ICCs are calculated exactly the same way. Depending on your model choice, specific nuances apply:
+
+* **Generalized Linear Mixed Models (GLMMs - Logistic Regression):** If your outcome is binary, level-1 residuals do not have a variance that is estimated directly from the data. Instead, using the widely accepted "latent variable approach," the level-1 variance is theoretically fixed to the variance of the standard logistic distribution, which is $\frac{\pi^2}{3}$ (approximately $3.29$) (Snijders & Bosker, 2012; Nakagawa et al., 2017). The formula becomes:
+  $$ICC_{logistic} = \frac{\tau^2}{\tau^2 + \frac{\pi^2}{3}}$$
+
+* **Adjusted vs. Unadjusted ICC:** The ICC calculated from an unconditional null model is referred to as the "unadjusted ICC." Once you add fixed predictors to your model, you can calculate an "adjusted ICC," which represents the proportion of *unexplained* variance accounted for by the grouping structure after controlling for those specific covariates (Nakagawa et al., 2017).
+
+* **Models with Random Slopes:** The traditional ICC is only strictly defined for random-intercept models. If you introduce a random slope, the between-cluster variance is no longer a single scalar number; it becomes a quadratic function that changes depending on the specific value of the predictor $x$ (Goldstein, 2011; Snijders & Bosker, 2012). In these cases, reporting a single ICC is technically incorrect. While some recent methodological extensions allow for calculating a marginal ICC averaged across the distribution of $x$ (Johnson, 2014), the standard best practice is to report the variance components directly or plot the between-cluster variance across values of $x$.
+
+
+## 3.5 Exemplary R Implementation
+
+The following R code calculates the exact formulas discussed above for the 2-level `engage` dataset and the 3-level `Chem97` dataset.
+
+```{r calculate-icc, warning=FALSE, message=FALSE}
+# ==============================================================================
+# MULTILEVEL MODELING AND ICC CALCULATION SCRIPT
+# Datasets: 'engage' (2-level) and 'Chem97' (3-level)
+# ==============================================================================
+# ------------------------------------------------------------------------------
+# PART A: TWO-LEVEL MODEL (engage dataset)
+# Students nested within schools
+# ------------------------------------------------------------------------------
+# Fit the unconditional (null) 2-level model
+# Formula: 'eng' predicted by a grand mean (1) and a random intercept for 'school'
+mod_engage <- lmer(eng ~ 1 + (1 | school), data = engage)
+
+# Extract variance components
+var_comp_eng <- as.data.frame(VarCorr(mod_engage))
+tau_sq_eng   <- var_comp_eng$vcov[1] # Level 2 (Between-school variance)
+sigma_sq_eng <- var_comp_eng$vcov[2] # Level 1 (Within-school variance)
+
+# Calculate 2-Level ICC
+icc_engage <- tau_sq_eng / (tau_sq_eng + sigma_sq_eng)
+
+cat("--- ENGAGE DATASET (2-LEVEL) ---\n")
+cat("Level-2 (Between-school) Variance:", round(tau_sq_eng, 3), "\n")
+cat("Level-1 (Within-school) Variance:", round(sigma_sq_eng, 3), "\n")
+cat("2-Level ICC:", round(icc_engage, 3), "\n\n")
+
+
+# ------------------------------------------------------------------------------
+# PART B: THREE-LEVEL MODEL (Chem97 dataset)
+# Students nested in schools, nested in Local Education Authorities (lea)
+# ------------------------------------------------------------------------------
+
+# Fit the unconditional (null) 3-level model
+# Formula: score predicted by grand mean (1) and random intercepts for lea and school within lea
+mod_chem <- lmer(score ~ 1 + (1 | lea/school), data = Chem97)
+
+# Extract variance components
+var_comp_chem <- as.data.frame(VarCorr(mod_chem))
+var_school <- var_comp_chem$vcov[1] # Level 2 (School variance)
+var_lea    <- var_comp_chem$vcov[2] # Level 3 (LEA variance)
+var_resid  <- var_comp_chem$vcov[3] # Level 1 (Student variance)
+
+# Calculate Total Variance
+total_var_chem <- var_school + var_lea + var_resid
+
+# Calculate 3-Level ICCs
+# Level-3 ICC (Proportion of variance strictly at the LEA level)
+icc_chem_L3 <- var_lea / total_var_chem
+
+# Level-2 ICC (Proportion of variance at or above the school level)
+icc_chem_L2 <- (var_lea + var_school) / total_var_chem
+
+cat("--- CHEM97 DATASET (3-LEVEL) ---\n")
+cat("Level-3 (LEA) Variance:", round(var_lea, 3), "\n")
+cat("Level-2 (School) Variance:", round(var_school, 3), "\n")
+cat("Level-1 (Student) Variance:", round(var_resid, 3), "\n")
+cat("3-Level ICC (Level 3 - LEA):", round(icc_chem_L3, 3), "\n")
+cat("3-Level ICC (Level 2 - School + LEA):", round(icc_chem_L2, 3), "\n")
+```
+
+The variance components and resulting ICCs derived from the unconditional null models quantify the degree of clustering in both datasets.  In the two-level `engage` dataset, the ICC indicates that approximately 7.8% of the total variance in student engagement scores is attributable to differences between schools. In the three-level `Chem97` dataset, while only a marginal 1.3% of the variance in chemistry scores lies between Local Education Authorities (LEAs), a substantial 25.4% of the total variance is accounted for at the school level and above. Calculating these variance partition coefficients determines the presence of correlation at the lower levels; thus, these non-zero ICC values strongly justify the need to account for this nested structure using a multilevel analysis (Monsalves et al., 2020).
+
+# 4. Design Effect, Variance Inflation, and Model Equations
+
+A fully transparent multilevel modeling report must not only provide the final statistical estimates but also justify the study design and explicitly state the mathematical structure of the models tested (Monsalves et al., 2020). This section covers the calculation of the Variance Inflation Factor (VIF) to diagnose clustering impact, followed by the formal equations governing our hierarchical analysis.
+
+## 4.1 The Design Effect and Variance Inflation Factor (VIF)
+
+**What is it?**
+The variance inflation factor (VIF), also called the "design effect," accounts for important statistical considerations in planning sample sizes at the different levels (Monsalves et al., 2020). 
+
+**Why it matters:**
+Considering the correlations typically leads to larger estimates of variances and consequently lower power if sample sizes are not increased at the design stage (Monsalves et al., 2020). At the design stage, if the variance component is small, it implies little variation among units at that level, making it more advantageous to sample more units from higher levels from an efficiency and power standpoint (Monsalves et al., 2020). 
+
+**The Formula:**
+For a given level, $k$, the VIF is calculated using the average cluster size ($m_{k}$) and the Variance Partition Coefficient ($VPC_{k}$) (Monsalves et al., 2020):
+
+$$VIF_{k} = 1 + (m_{k} - 1) \times VPC_{k}$$
+
+* $m_{k}$: The average number of units in a member of the $k^{th}$ level (Monsalves et al., 2020).
+
+* $VPC_{k}$: The variance partition coefficient for that specific level (Monsalves et al., 2020).
+
+## 4.2 R Implementation for VIF Calculation
+The following snippet calculates the average cluster sizes and the resulting design effects for the 3-level dataset.
+
+```{r calculate-vif, warning=FALSE, message=FALSE}
+# Load required libraries and data
+library(lme4)
+# ==============================================================================
+# 1. TWO-LEVEL MODEL DESIGN EFFECT (engage dataset)
+# ==============================================================================
+
+# Fit the Null Model to extract variance components
+mod_null_eng <- lmer(eng ~ 1 + (1 | school), data = engage, REML = FALSE)
+vc_eng <- as.data.frame(VarCorr(mod_null_eng))
+
+var_school_eng <- vc_eng$vcov[1] # Level 2 (School variance)
+var_resid_eng  <- vc_eng$vcov[2] # Level 1 (Student variance)
+total_var_eng  <- var_school_eng + var_resid_eng
+
+# Calculate VPC (ICC)
+vpc_school_eng <- var_school_eng / total_var_eng
+
+# Calculate Average Cluster Size (m)
+m_school_eng <- nrow(engage) / length(unique(engage$school))
+
+# Calculate VIF
+vif_school_eng <- 1 + (m_school_eng - 1) * vpc_school_eng
+
+cat("--- DESIGN EFFECTS (engage: 2-Level) ---\n")
+cat("Average students per school (m):", round(m_school_eng, 2), "\n")
+cat("School-Level VIF:", round(vif_school_eng, 2), "\n\n")
+
+# ==============================================================================
+# 2. THREE-LEVEL MODEL DESIGN EFFECTS (Chem97 dataset)
+# ==============================================================================
+
+# Fit the Null Model to extract variance components
+mod_null_chem <- lmer(score ~ 1 + (1 | lea/school), data = Chem97, REML = FALSE)
+vc_chem <- as.data.frame(VarCorr(mod_null_chem))
+
+var_school_chem <- vc_chem$vcov[1]
+var_lea_chem    <- vc_chem$vcov[2]
+var_resid_chem  <- vc_chem$vcov[3]
+total_var_chem  <- var_school_chem + var_lea_chem + var_resid_chem
+
+# Calculate VPCs (ICCs)
+vpc_school_chem <- (var_school_chem + var_lea_chem) / total_var_chem
+vpc_lea_chem    <- var_lea_chem / total_var_chem
+
+# Calculate Average Cluster Sizes (m)
+m_school_chem <- nrow(Chem97) / length(unique(Chem97$school))
+m_lea_chem    <- nrow(Chem97) / length(unique(Chem97$lea))
+
+# Calculate VIFs
+vif_school_chem <- 1 + (m_school_chem - 1) * vpc_school_chem
+vif_lea_chem    <- 1 + (m_lea_chem - 1) * vpc_lea_chem
+
+cat("--- DESIGN EFFECTS (Chem97: 3-Level) ---\n")
+cat("Average students per school (m):", round(m_school_chem, 2), "\n")
+cat("School-Level VIF:", round(vif_school_chem, 2), "\n\n")
+
+cat("Average students per LEA (m):", round(m_lea_chem, 2), "\n")
+cat("LEA-Level VIF:", round(vif_lea_chem, 2), "\n")
+```
+
+The calculated Variance Inflation Factors (VIF) provide concrete statistical justification for employing multilevel modeling by revealing how much standard errors would be artificially compressed under standard ordinary least squares regression.  In the two-level engage dataset, the school-level VIF of 1.90 indicates that estimate variances are nearly doubled strictly due to the average cluster size of 13.2 students per school. Meanwhile, the three-level Chem97 dataset exhibits severe design effects with VIFs around 4.0 at both the school and Local Education Authority (LEA) levels, largely driven by massive clusters averaging over 236 students per district. These substantial design effects confirm that ignoring the hierarchical structure in either dataset would severely underestimate standard errors and drastically increase the risk of false-positive results (Monsalves et al., 2020).
+
+## 4.3 Explicit Model Equations
+
+Standard reporting guidelines, such as the LEVEL checklist, recommend explicitly writing out the multilevel model equation including the random effects (Monsalves et al., 2020). Researchers must clearly state what equation can best represent their model (Huang, 2023a). The following equations define the sequence of models estimated for the `Chem97` dataset, where $Y_{ijk}$ represents the chemistry score for Student $i$ in School $j$ in LEA $k$.
+
+### 4.3.1 The Null Model
+An initial "null" multilevel model with no independent variables is strongly encouraged (Monsalves et al., 2020). It estimates the grand mean and the variance components:
+
+$$Y_{ijk} = \gamma_{000} + v_{00k} + u_{0jk} + \epsilon_{ijk}$$
+
+### 4.3.2 The Intermediate Model
+This model introduces level-1 demographic fixed effects to assess their impact on the unexplained variance:
+
+$$Y_{ijk} = \gamma_{000} + \beta_{1}(Gender_{ijk}) + \beta_{2}(Age_{ijk}) + v_{00k} + u_{0jk} + \epsilon_{ijk}$$
+
+### 4.3.3 The Final Model
+The final model incorporates a continuous, grand-mean centered predictor (GCSE score) as a fixed effect, alongside a random slope at the school level. Random intercepts and random slopes help to attribute the variation in values of the outcome variable to the relevant levels and independent variables (Monsalves et al., 2020).
+
+$$Y_{ijk} = \gamma_{000} + \beta_{1}(Gender_{ijk}) + \beta_{2}(Age_{ijk}) + \beta_{3}(GCSE_{ijk}^{c}) + v_{00k} + u_{1jk}(GCSE_{ijk}^{c}) + \epsilon_{ijk}$$
+
+**Component Breakdown:**
+
+* $\gamma_{000}$: The fixed effect intercept (the grand mean score for the reference group).
+
+* $\beta_{1}, \beta_{2}, \beta_{3}$: The fixed effect coefficients for the respective predictors.
+
+* $v_{00k}$: The random intercept effect for LEA $k$.
+
+* $u_{0jk}$: The random intercept effect for School $j$ within LEA $k$.
+
+* $u_{1jk}(GCSE_{ijk}^{c})$: The random slope effect. 
+
+* $\epsilon_{ijk}$: The individual-level residual error.
+
+# 5. Comprehensive Reporting of the Multilevel Analysis
+
+Finally, we lean on to the correct and comprehensive reporting of the result of a multilevel analysis. Here, using the `Chem97` dataset, we fit three models, first the null model, then intermediate model with random intercept, and the final model where we include the random slope as the final component.
+
+```{r}
+# 1. Load the libraries
+library(performance) # Required for R2
+
+Chem97$gender <- relevel(Chem97$gender, ref = "M")
+# Explicitly grand-mean centering as per reporting guidelines
+Chem97$gcsescore_cen <- scale(Chem97$gcsescore, center = TRUE, scale = FALSE)
+
+# 3. Fit the Models
+# CRITICAL FIX: REML = FALSE is required because we are comparing models 
+# with different fixed effects using AIC/BIC. 
+mod_null <- lmer(score ~ 1 + (1 | lea/school), data = Chem97, REML = FALSE)
+mod_inter <- lmer(score ~ gender + age + (1 | lea/school), data = Chem97, REML = FALSE)
+mod_final <- lmer(score ~ gender + age + gcsescore_cen + 
+                    (1 | lea) + (1 + gcsescore_cen | school), data = Chem97, REML = FALSE)
+
+# ------------------------------------------------------------------------------
+# 4. Helper Function to Extract and Format Model Data
+# ------------------------------------------------------------------------------
+extract_model_stats <- function(mod, model_type) {
+  
+  # Extract raw components
+  f_eff <- fixef(mod)                           # Fixed effects
+  se <- sqrt(diag(vcov(mod)))                   # Standard errors
+  vc <- VarCorr(mod)                            # Variance components
+  fit_sum <- summary(mod)
+  
+  # Formatting functions
+  fmt_num <- function(x) sprintf("%.3f", x)
+  fmt_se  <- function(x) paste0("(", sprintf("%.3f", x), ")")
+  
+  # P-value calculation (Wald Z-test approximation)
+  fmt_p <- function(est, std_err) {
+    if(is.na(est)) return("")
+    z <- abs(est / std_err)
+    p <- 2 * (1 - pnorm(z))
+    stars <- ifelse(p < 0.001, "***", 
+             ifelse(p < 0.01, "**", 
+             ifelse(p < 0.05, "*", 
+             ifelse(p < 0.1, "+", ""))))
+    paste0(fmt_num(est), stars)
+  }
+  
+  # Initialize empty list for column values
+  col <- rep("", 22)
+  
+  # --- Fixed Effects ---
+  col[1] <- fmt_p(f_eff["(Intercept)"], se["(Intercept)"])
+  col[2] <- fmt_se(se["(Intercept)"])
+  
+  if(model_type %in% c("inter", "final")) {
+    col[3] <- fmt_p(f_eff["genderF"], se["genderF"])
+    col[4] <- fmt_se(se["genderF"])
+    col[5] <- fmt_p(f_eff["age"], se["age"])
+    col[6] <- fmt_se(se["age"])
+  }
+  
+  if(model_type == "final") {
+    col[7] <- fmt_p(f_eff["gcsescore_cen"], se["gcsescore_cen"])
+    col[8] <- fmt_se(se["gcsescore_cen"])
+  }
+  
+  # --- Random Effects (Standard Deviations) ---
+  school_grp <- ifelse(model_type == "final", "school", "school:lea")
+  
+  col[9]  <- fmt_num(attr(vc[["lea"]], "stddev")[1])       # SD LEA Intercept
+  col[10] <- fmt_num(sigma(mod))                           # SD Residual
+  col[11] <- fmt_num(attr(vc[[school_grp]], "stddev")[1])  # SD School Intercept
+  
+  if(model_type == "final") {
+    col[12] <- fmt_num(attr(vc[["school"]], "stddev")[2])  # SD Slope
+    col[13] <- fmt_num(attr(vc[["school"]], "correlation")[1,2]) # Correlation
+  }
+  
+  # --- Fit Statistics ---
+  col[14] <- as.character(nobs(mod))
+  col[15] <- sprintf("%.1f", AIC(mod))
+  col[16] <- sprintf("%.1f", BIC(mod))
+  
+  # --- R-squared ---
+  r2 <- performance::r2(mod)
+  col[17] <- fmt_num(r2$R2_marginal)
+  col[18] <- fmt_num(r2$R2_conditional)
+  
+  # --- Groups ---
+  col[19] <- as.character(fit_sum$ngrps["lea"])
+  col[20] <- as.character(fit_sum$ngrps[school_grp])
+  
+  # --- Conditional ICCs (Evaluated at intercept) ---
+  var_lea    <- attr(vc[["lea"]], "stddev")[1]^2
+  var_school <- attr(vc[[school_grp]], "stddev")[1]^2
+  var_res    <- sigma(mod)^2
+  total_var  <- var_lea + var_school + var_res
+  
+  # CRITICAL FIX: 3-Level ICC Calculations
+  # School Level ICC = (Dist + School Var) / Total Var
+  col[21] <- fmt_num((var_school + var_lea) / total_var)
+  
+  # LEA Level ICC = Dist Var / Total Var
+  col[22] <- fmt_num(var_lea / total_var)
+  
+  return(col)
+}
+
+# ------------------------------------------------------------------------------
+# 5. Build the Data Frame and Render Table
+# ------------------------------------------------------------------------------
+
+# Generate the columns programmatically
+null_col  <- extract_model_stats(mod_null, "null")
+inter_col <- extract_model_stats(mod_inter, "inter")
+final_col <- extract_model_stats(mod_final, "final")
+
+# Assemble the final data frame
+exact_table <- data.frame(
+  Term = c(
+    "(Intercept)", "",
+    "Gender: Female", "",
+    "Age", "",
+    "GCSE Score (Centered)", "",
+    "SD (LEA Intercept)",
+    "SD (Residual)",
+    "SD (School Intercept)",
+    "SD (Slope: GCSE Score)",
+    "Cor (Intercept ~ Slope)",
+    "Num.Obs. (L1)",
+    "AIC",
+    "BIC",
+    "R2 Marg.",
+    "R2 Cond.",
+    "N LEAs (Level 3)",
+    "N Schools (Level 2)",
+    "ICC (School Level)",
+    "ICC (LEA Level)"
+  ),
+  Null_Model = null_col,
+  Intermediate = inter_col,
+  Final_Model = final_col
+)
+
+# Render with kableExtra 
+kable(exact_table, 
+      col.names = c("", "Null Model", "Intermediate", "Final Model"),
+      align = c("l", "c", "c", "c"),
+      escape = FALSE) %>%
+  kable_styling(full_width = FALSE, position = "left", html_font = "Arial") %>%
+  row_spec(0, extra_css = "border-top: 2px solid black; border-bottom: 1px solid black;") %>%
+  row_spec(13, extra_css = "border-bottom: 1px solid black;") %>%
+  row_spec(22, extra_css = "border-bottom: 2px solid black;") %>%
+  add_header_above(c("Table 3: 3-Level Regression Model Results for Chemistry Scores" = 4), align = "l",
+                   extra_css = "border-bottom: none; font-size: 14px; font-weight: bold; color: #000;") %>%
+  footnote(general = c("+ p < 0.1, * p < 0.05, ** p < 0.01, *** p < 0.001",
+                       "Models were estimated using Maximum Likelihood (ML) to allow for valid AIC/BIC comparisons.",
+                       "Prior achievement (GCSE Score) was grand-mean centered."),
+           general_title = "Notes: ")
+```
+
+
+To ensure transparency and reproducibility, the results of this 3-level hierarchical analysis are reported following established best practices for linear mixed models (Huang, 2023a; Monsalves et al., 2020).  The summary table presents the model-building process, estimation choices, and variance decomposition steps necessary for a rigorous multilevel analysis.
+
+## 5.1 Transparent Model-Building Sequence
+Rather than presenting only a final model, the analysis displays a stepwise progression:
+
+* **The Null Model:** An initial null multilevel model with no independent variables is strongly encouraged to establish baseline variance components (Monsalves et al., 2020). It also justifies the multilevel approach by allowing the calculation of the Intraclass Correlation Coefficient (ICC) or Variance Partition Coefficient (VPC) (Monsalves et al., 2020).
+
+* **The Intermediate & Final Models:** Introducing independent variables across intermediate and final models helps the reader understand the impact of explanatory variables on the variance components (Monsalves et al., 2020).
+
+## 5.2 Estimation Methods and Model Comparison
+A critical methodological decision in multilevel modeling is specifying the exact estimation method utilized (Monsalves et al., 2020). 
+
+* Researchers must explicitly report whether Maximum Likelihood (ML) or Restricted Maximum Likelihood (REML) was used to estimate the models (Huang, 2023a). 
+
+* Being transparent about the choice between ML and REML allows readers to have faith in the study findings and understand how the fixed effects and variance components were derived (Huang, 2023a). 
+
+## 5.3 Data Hierarchy and Sample Sizes
+A common pitfall is reporting only the total number of observations, which obscures the nested structure. 
+
+* Reporting guidelines state that researchers must detail the nested data structure and provide the number of members at each level (Huang, 2023a; Monsalves et al., 2020). 
+
+* The summary table explicitly reports the sample sizes at every hierarchical level: 31,022 Level-1 students, 2,410 Level-2 schools, and 131 Level-3 Local Education Authorities (LEAs).
+
+## 5.4 Centering Decisions
+The interpretation of the intercept depends heavily on the scaling of the predictors. 
+
+* To ensure clarity, reporting standards require detailing what variables were centered and what kind of centering was applied (Huang, 2023a). 
+
+* To ensure the intercept represents a meaningful baseline in our models, prior achievement (GCSE scores) was grand-mean centered, and this decision is explicitly documented in the table's footnotes.
+
+## 5.5 Full Disclosure of Random Effects
+Proper reporting requires detailing the random effects beyond just the fixed coefficients, as variance estimates of random effects are missing in the vast majority of published literature (Monsalves et al., 2020). 
+
+* The table explicitly reports the standard deviations of the random intercepts and the standard deviation of the random slope. 
+
+* Furthermore, if random intercepts and random slopes are included in the models, the estimated correlation structure among the random effects should also be presented (Monsalves et al., 2020).
+
+# 6. Advantages and Limitations of Multilevel Models
+
+Multilevel models have a number of benefits. They enable the decomposition of variance over several levels, provide more precise standard errors, and suitably account for hierarchical data structures. When compared to conventional regression models, this results in more trustworthy statistical inference.
+
+Multilevel models do, however, have certain drawbacks. They contain greater assumptions about the distribution of random effects, call for bigger sample sizes at higher levels, and are more difficult to define and analyse. Furthermore, model convergence and estimate can be computationally taxing, especially for intricate models with numerous random effects.
+
+# 7. Conclusion
+
+This tutorial showed that understanding the **hierarchical structure of the data** is a necessary first step in multilevel modeling. Using the *engage* and *Chem97* datasets, we illustrated how nested data arise naturally in educational research and why such structures cannot be analyzed appropriately with standard single-level regression models. In both datasets, observations are clustered within higher-level units, meaning that part of the total variation lies not only at the individual level but also at the school and, in the case of *Chem97*, district level.
+
+The tutorial also demonstrated that the need for multilevel modeling should not be assumed solely from the existence of grouped data, but should be justified empirically through variance decomposition and the Intraclass Correlation Coefficient (ICC). The ICC quantifies how much of the outcome variance is attributable to higher-level clustering and therefore provides a formal basis for deciding whether multilevel analysis is warranted (Monsalves et al., 2020; Snijders & Bosker, 2012). Together, the descriptive structure of the datasets and the non-zero ICC values provide strong evidence that multilevel modeling is the appropriate framework for these examples.
+
+More broadly, the tutorial highlights that good multilevel practice involves not only fitting the correct model, but also reporting the data hierarchy, sampling structure, variance components, and methodological decisions transparently. Clear reporting strengthens interpretability, reproducibility, and the scientific value of multilevel analyses (Huang, 2023a; Monsalves et al., 2020).
+
+# References
+
+Browne, W. J. (2012). *mlmRev: Examples from multilevel modelling software review* (R package). https://CRAN.R-project.org/package=mlmRev
+
+Goldstein, H. (2011). *Multilevel statistical models* (4th ed.). John Wiley & Sons.
+
+Huang, F. L. (2023a). Reporting results of multilevel models. In *Practical multilevel modeling using R* (pp. 33–48). SAGE Publications.
+
+Huang, F. L. (2023b). *MLMusingR: Data and code for practical multilevel modeling using R* (R package). https://CRAN.R-project.org/package=MLMusingR
+
+Johnson, P. C. D. (2014). Extension of Nakagawa and Schielzeth’s R²GLMM to random slopes models. *Methods in Ecology and Evolution, 5*(9), 944–946. https://doi.org/10.1111/2041-210X.12225
+
+Monsalves, M. J., Bangdiwala, A. S., Thabane, A., & Bangdiwala, S. I. (2020). LEVEL: Logical explanations and visualizations of estimates in linear mixed models: Recommendations for reporting multilevel data and analyses. *BMC Medical Research Methodology, 20*(1), 3. https://doi.org/10.1186/s12874-019-0876-8
+
+Nakagawa, S., Johnson, P. C. D., & Schielzeth, H. (2017). The coefficient of determination R² and intraclass correlation coefficient from generalized linear mixed-effects models revisited and expanded. *Journal of the Royal Society Interface, 14*(134), 20170213. https://doi.org/10.1098/rsif.2017.0213
+
+R Core Team. (2024). *R: A language and environment for statistical computing*. R Foundation for Statistical Computing. https://www.R-project.org/
+
+Snijders, T. A. B., & Bosker, R. J. (2012). *Multilevel analysis: An introduction to basic and advanced multilevel modeling* (2nd ed.). SAGE Publications.
+
+
+
+
+
+
